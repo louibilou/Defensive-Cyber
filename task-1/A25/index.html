@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Local File Encryptor</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="card">
+    <h1>Local File Encryptor</h1>
+    <p class="subtitle">Encrypt and decrypt files entirely in your browser using a password.</p>
+
+    <label class="field">
+      <span>Choose file</span>
+      <input id="fileInput" type="file" />
+    </label>
+
+    <label class="field">
+      <span>Password</span>
+      <input id="passwordInput" type="password" placeholder="Enter password" />
+    </label>
+
+    <div class="actions">
+      <button id="encryptBtn" type="button">Encrypt</button>
+      <button id="decryptBtn" type="button">Decrypt</button>
+    </div>
+
+    <p id="status" class="status" aria-live="polite"></p>
+
+    <details>
+      <summary>How this works</summary>
+      <ul>
+        <li>Uses AES-GCM encryption in your browser (Web Crypto API).</li>
+        <li>Derives a key from your password using PBKDF2 + random salt.</li>
+        <li>No upload to a server; processing happens on your device.</li>
+      </ul>
+    </details>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
