@@ -1,1 +1,266 @@
+#!/usr/bin/env python3
 
+import argparse
+import csv
+import math
+import re
+from pathlib import Path
+from fnmatch import fnmatch
+
+
+# Known suspicious / malicious-style filenames
+IOC_NAMES = {
+    "mimikatz.exe",
+    "netcat.exe",
+    "nc.exe",
+    "psexec.exe",
+    "procdump.exe",
+    "rclone.exe",
+    "anydesk.exe",
+    "teamviewer.exe",
+    "payload.exe",
+    "reverse_shell.py",
+    "shell.php",
+    "webshell.php",
+    "cmd.php",
+    "invoice.pdf.exe",
+    "update.exe",
+    "svchosts.exe",
+}
+
+# Suspicious wildcard patterns
+IOC_PATTERNS = [
+    "*.pdf.exe",
+    "*.doc.exe",
+    "*.docx.exe",
+    "*.xls.exe",
+    "*.xlsx.exe",
+    "*.jpg.exe",
+    "*.png.exe",
+    "*.zip.exe",
+    "*password*",
+    "*credential*",
+    "*dump*",
+    "*payload*",
+    "*backdoor*",
+    "*keylogger*",
+    "*stealer*",
+    "*rat*",
+]
+
+# High-risk extensions
+SUSPICIOUS_EXTENSIONS = {
+    ".exe", ".scr", ".bat", ".cmd", ".ps1", ".vbs", ".js",
+    ".jar", ".hta", ".dll", ".msi", ".php", ".aspx", ".jsp"
+}
+
+# Common ransomware-style extensions
+RANSOMWARE_EXTENSIONS = {
+    ".locky", ".crypt", ".crypted", ".encrypted", ".wannacry",
+    ".ryuk", ".conti", ".revil", ".darkside"
+}
+
+# File types commonly used as bait
+DOCUMENT_EXTENSIONS = {
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".jpg", ".jpeg", ".png", ".txt"
+}
+
+
+def entropy(text: str) -> float:
+    """Calculate Shannon entropy to detect random-looking filenames."""
+    if not text:
+        return 0.0
+
+    freq = {}
+    for char in text:
+        freq[char] = freq.get(char, 0) + 1
+
+    result = 0.0
+    length = len(text)
+
+    for count in freq.values():
+        probability = count / length
+        result -= probability * math.log2(probability)
+
+    return result
+
+
+def has_double_extension(filename: str) -> bool:
+    """
+    Detect filenames like:
+    invoice.pdf.exe
+    photo.jpg.scr
+    report.docx.js
+    """
+    parts = filename.lower().split(".")
+
+    if len(parts) < 3:
+        return False
+
+    second_last_ext = "." + parts[-2]
+    last_ext = "." + parts[-1]
+
+    return second_last_ext in DOCUMENT_EXTENSIONS and last_ext in SUSPICIOUS_EXTENSIONS
+
+
+def has_unicode_trick(filename: str) -> bool:
+    """
+    Detect unusual Unicode tricks, such as right-to-left override.
+    Attackers use this to disguise extensions.
+    """
+    suspicious_unicode = [
+        "\u202e",  # Right-to-left override
+        "\u202d",
+        "\u200f",
+        "\u200e",
+        "\u2066",
+        "\u2067",
+        "\u2068",
+        "\u2069",
+    ]
+
+    return any(char in filename for char in suspicious_unicode)
+
+
+def looks_random(filename_stem: str) -> bool:
+    """
+    Flags names that look randomly generated, e.g.:
+    a8f7sd9f7sdf.exe
+    x92ks8qla1.tmp
+    """
+    clean_name = re.sub(r"[^a-zA-Z0-9]", "", filename_stem)
+
+    if len(clean_name) < 10:
+        return False
+
+    return entropy(clean_name) > 3.5
+
+
+def check_filename(path: Path) -> list:
+    """
+    Returns a list of reasons why a filename looks suspicious.
+    """
+    reasons = []
+
+    filename = path.name
+    filename_lower = filename.lower()
+    stem_lower = path.stem.lower()
+    extension = path.suffix.lower()
+
+    if filename_lower in IOC_NAMES:
+        reasons.append("Exact IOC filename match")
+
+    for pattern in IOC_PATTERNS:
+        if fnmatch(filename_lower, pattern):
+            reasons.append(f"Matches suspicious pattern: {pattern}")
+
+    if extension in SUSPICIOUS_EXTENSIONS:
+        reasons.append(f"Suspicious extension: {extension}")
+
+    if extension in RANSOMWARE_EXTENSIONS:
+        reasons.append(f"Possible ransomware extension: {extension}")
+
+    if has_double_extension(filename):
+        reasons.append("Double extension detected")
+
+    if has_unicode_trick(filename):
+        reasons.append("Possible Unicode filename trick")
+
+    if looks_random(stem_lower):
+        reasons.append("Random-looking filename")
+
+    if filename_lower.startswith(".") and extension in SUSPICIOUS_EXTENSIONS:
+        reasons.append("Hidden suspicious executable/script")
+
+    return reasons
+
+
+def scan_directory(directory: Path, recursive: bool = True) -> list:
+    """
+    Scan a directory and return suspicious file results.
+    """
+    results = []
+
+    files = directory.rglob("*") if recursive else directory.glob("*")
+
+    for file_path in files:
+        if file_path.is_file():
+            reasons = check_filename(file_path)
+
+            if reasons:
+                results.append({
+                    "path": str(file_path),
+                    "filename": file_path.name,
+                    "reasons": "; ".join(reasons)
+                })
+
+    return results
+
+
+def save_csv(results: list, output_file: Path):
+    with output_file.open("w", newline="", encoding="utf-8") as csvfile:
+        fieldnames = ["path", "filename", "reasons"]
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+        writer.writeheader()
+        writer.writerows(results)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Scan file names for malicious or suspicious indicators."
+    )
+
+    parser.add_argument(
+        "directory",
+        help="Directory to scan"
+    )
+
+    parser.add_argument(
+        "--no-recursive",
+        action="store_true",
+        help="Only scan the chosen directory, not subdirectories"
+    )
+
+    parser.add_argument(
+        "--csv",
+        help="Save results to a CSV file"
+    )
+
+    args = parser.parse_args()
+
+    directory = Path(args.directory)
+
+    if not directory.exists():
+        print(f"[!] Directory does not exist: {directory}")
+        return
+
+    if not directory.is_dir():
+        print(f"[!] Not a directory: {directory}")
+        return
+
+    results = scan_directory(
+        directory,
+        recursive=not args.no_recursive
+    )
+
+    if not results:
+        print("[+] No suspicious filenames found.")
+        return
+
+    print(f"[!] Suspicious filenames found: {len(results)}\n")
+
+    for result in results:
+        print(f"File: {result['path']}")
+        print(f"Reason: {result['reasons']}")
+        print("-" * 60)
+
+    if args.csv:
+        output_file = Path(args.csv)
+        save_csv(results, output_file)
+        print(f"\n[+] Results saved to: {output_file}")
+
+
+if __name__ == "__main__":
+    main()
