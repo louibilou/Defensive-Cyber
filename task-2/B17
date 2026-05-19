@@ -1,1 +1,112 @@
-python code 
+#!/usr/bin/env python3
+
+import re
+import argparse
+from datetime import datetime
+from collections import defaultdict
+
+import pandas as pd
+
+
+FAILED_LOGIN_PATTERN = re.compile(
+    r"^(?P<month>\w{3})\s+(?P<day>\d{1,2})\s+(?P<time>\d{2}:\d{2}:\d{2}).*"
+    r"Failed password.* from (?P<ip>\d+\.\d+\.\d+\.\d+)"
+)
+
+MONTHS = {
+    "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4,
+    "May": 5, "Jun": 6, "Jul": 7, "Aug": 8,
+    "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12
+}
+
+
+def parse_auth_log(file_path):
+    events = []
+    current_year = datetime.now().year
+
+    with open(file_path, "r", errors="ignore") as file:
+        for line in file:
+            match = FAILED_LOGIN_PATTERN.search(line)
+
+            if match:
+                month = MONTHS[match.group("month")]
+                day = int(match.group("day"))
+                time_part = match.group("time")
+                ip = match.group("ip")
+
+                timestamp = datetime.strptime(
+                    f"{current_year}-{month}-{day} {time_part}",
+                    "%Y-%m-%d %H:%M:%S"
+                )
+
+                events.append({
+                    "timestamp": timestamp,
+                    "ip": ip
+                })
+
+    return pd.DataFrame(events)
+
+
+def detect_anomalies(df, window_minutes=5, min_attempts=5):
+    if df.empty:
+        return pd.DataFrame()
+
+    df["time_window"] = df["timestamp"].dt.floor(f"{window_minutes}min")
+
+    grouped = (
+        df.groupby(["time_window", "ip"])
+        .size()
+        .reset_index(name="failed_attempts")
+    )
+
+    anomalies = grouped[grouped["failed_attempts"] >= min_attempts]
+
+    return anomalies.sort_values(
+        by="failed_attempts",
+        ascending=False
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Detect anomalous SSH failed login attempts from Linux auth logs."
+    )
+
+    parser.add_argument(
+        "-f",
+        "--file",
+        default="/var/log/auth.log",
+        help="Path to auth log file. Default: /var/log/auth.log"
+    )
+
+    parser.add_argument(
+        "-w",
+        "--window",
+        type=int,
+        default=5,
+        help="Time window in minutes. Default: 5"
+    )
+
+    parser.add_argument(
+        "-t",
+        "--threshold",
+        type=int,
+        default=5,
+        help="Minimum failed attempts in one window to flag as anomaly. Default: 5"
+    )
+
+    args = parser.parse_args()
+
+    df = parse_auth_log(args.file)
+    anomalies = detect_anomalies(df, args.window, args.threshold)
+
+    print("\n=== SSH Failed Login Anomaly Detection ===\n")
+
+    if anomalies.empty:
+        print("No anomalies detected.")
+    else:
+        print(anomalies.to_string(index=False))
+
+
+if __name__ == "__main__":
+    main()
